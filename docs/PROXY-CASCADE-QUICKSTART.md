@@ -261,16 +261,9 @@ https://5.35.127.68:50593/<WebBasePath>/
 | **Сервер** | RU сейчас (`5.35.127.68`) | NL (`138.124.2.114`) — по гайду |
 | **Статус** | **Текущий путь** | Отложено (+ nginx fallback) |
 
-```
-Вариант A (сейчас):  Клиент → RU:443 Reality → интернет (позже каскад → NL)
-
-Вариант B (позже):   DNS → NL → VLESS+TLS+XHTTP:443
-                     + nginx fallback-заглушка на 443 (HTTP-сайт, «менее палевно»)
-```
-
 ---
 
-### Вариант A. Без домена — VLESS + Reality *(текущий)*
+### Вариант A. Без домена — VLESS + Reality
 
 **Reality** не требует своего домена и сертификата. Трафик маскируется под **чужой** реальный HTTPS-сайт (dest / SNI): для DPI это похоже на обычное TLS-подключение к известному домену.
 
@@ -345,16 +338,9 @@ Reality-**dest не обязан** быть из скана соседей: эт
 7. Сгенерировать **Short ID**, **Private key** (панель делает сама)
 8. Добавить клиента → QR / ссылка в v2rayN / v2rayNG
 
-### Чеклист Reality (RU)
-
-- [x] RealiTLScanner скачан и запущен на RU
-- [x] Dest/SNI выбран (Reality + XHTTP на :443)
-- [x] Inbound VLESS + Reality создан
-- [x] Каскад RU → NL ([шаг 6](#шаг-6-каскад-ru--nl-рабочая-схема))
-
 ---
 
-### Вариант B. С доменом — VLESS + TLS + XHTTP *(отложено)*
+### Вариант B. С доменом — VLESS + TLS + XHTTP
 
 Путь из гайда для **зарубежного сервера**, когда появится домен.
 
@@ -404,7 +390,7 @@ TODO (позже):
 
 ---
 
-## Шаг 6. Каскад RU → NL *(рабочая схема)*
+## Шаг 6. Каскад RU → NL
 
 > **Статус:** проверено, работает. Примеры конфигов: [`xray-ru-cascade.json`](examples/xray-ru-cascade.json), [`xray-nl-bridge.json`](examples/xray-nl-bridge.json) (секреты — плейсхолдеры).
 
@@ -523,17 +509,6 @@ jq '{
 
 Полный конфиг: `cat /usr/local/x-ui/bin/config.json` — **не коммитить** с ключами.
 
-### Чеклист каскад
-
-- [x] 3x-ui на RU и NL
-- [x] NL inbound `admin-nl` :443
-- [x] RU outbound → NL (ссылка `admin-nl`)
-- [x] RU routing: .ru direct, остальное → NL
-- [x] RU inbound `admin-ru` → телефон
-- [x] `ifconfig.me` на google → NL IP
-- [ ] SSH-ключи ([шаг 2](#шаг-2-вход-по-ssh-ключам-отложено))
-- [ ] Доменный путь ([вариант B](#вариант-b-с-доменом--vless--tls--xhttp-отложено))
-
 ---
 
 ## Шаг 5. Клиент и проверка
@@ -544,38 +519,7 @@ jq '{
 
 ---
 
-## Следующие шаги
-
-1. **SSH-ключи** — [шаг 2](#шаг-2-вход-по-ssh-ключам-отложено).
-2. **Домен + VLESS TLS XHTTP** — [вариант B](#вариант-b-с-доменом--vless--tls--xhttp-отложено).
-3. **FI-сервер** — когда будет доступен, третий hop.
-4. **ICMP / ping** — опционально ([шаг 1](#опционально-отключить-ping-icmp-отложено)).
-5. **host/path в XHTTP** — усилить маскировку ([шаг 4](#шаг-4-inbound--два-подхода)).
-
----
-
 ## Полезные команды
-
-### UFW
-
-```bash
-ufw status numbered          # правила с номерами (для delete)
-ufw allow 443/tcp            # HTTPS / прокси
-ufw allow 50593/tcp           # порт панели 3x-ui (свой порт — x-ui settings)
-ufw delete allow 443/tcp     # убрать правило
-ufw disable                  # временно выключить (осторожно на prod)
-```
-
-### 3x-ui
-
-```bash
-x-ui              # меню управления
-x-ui settings     # port, login, password, webBasePath
-x-ui status       # systemd + последние логи
-x-ui restart      # перезапуск (если database is locked)
-x-ui log          # полный лог
-x-ui banlog       # логи fail2ban / IP Limit
-```
 
 ### RealiTLScanner
 
