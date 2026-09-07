@@ -64,16 +64,7 @@ ufw status verbose
 ```
 
 `OpenSSH` — готовый профиль UFW; эквивалент `ufw allow 22/tcp`.
-
-#### Почему `--force`
-
-При `ufw enable` без флага скрипт спрашивает `Proceed with operation (y|n)?`. В SSH-сессии с **русской раскладкой** вместо латинской `y` может попасть кириллический символ — UFW падает с ошибкой:
-
-```
-UnicodeDecodeError: 'utf-8' codec can't decode byte 0xd0 in position 0
-```
-
-`ufw --force enable` включает firewall без интерактивного подтверждения. Альтернатива: переключить раскладку на English и ввести `y`.
+`ufw --force enable` включает firewall без интерактивного подтверждения.
 
 ### Открытие портов 80 и 443
 
