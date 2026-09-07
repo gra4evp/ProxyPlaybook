@@ -1,0 +1,37 @@
+{
+  "_comment": "NL server — bridge inbound for RU only. Replace secrets; restrict PROXY_PORT in UFW to RU_SERVER_IP.",
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "tag": "in-443-tcp",
+      "settings": {
+        "clients": [{ "email": "client-nl", "id": "BRIDGE-UUID" }],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "target": "www.cloudflare.com:443",
+          "serverNames": ["www.cloudflare.com"],
+          "privateKey": "<REALITY_PRIVATE_KEY_NL>",
+          "shortIds": ["SHORT_ID_NL"]
+        },
+        "xhttpSettings": { "host": "", "mode": "auto", "path": "/" }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom", "tag": "direct" },
+    { "protocol": "blackhole", "tag": "blocked" }
+  ],
+  "routing": {
+    "rules": [
+      { "type": "field", "inboundTag": ["api"], "outboundTag": "api" },
+      { "type": "field", "ip": ["geoip:private"], "outboundTag": "blocked" },
+      { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" }
+    ]
+  }
+}

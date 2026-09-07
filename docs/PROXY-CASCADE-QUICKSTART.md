@@ -1,0 +1,551 @@
+# Proxy Cascade Quickstart
+
+Гайд по каскадному VPN: клиент подключается к **входному** VPS (RU), трафик на зарубежные ресурсы выходит через **exit** VPS (NL). Split-routing: `.ru` / geoip:RU — напрямую с RU IP.
+
+## Переменные
+
+Подставь свои значения перед настройкой:
+
+| Переменная | Описание | Пример |
+|------------|----------|--------|
+| `RU_IP` | Публичный IP входного сервера (РФ) | `203.0.113.10` |
+| `NL_IP` | Публичный IP exit-сервера (зарубежный) | `198.51.100.20` |
+| `PANEL_PORT_RU` | Порт панели 3x-ui на RU (`x-ui settings`) | `51000` |
+| `PANEL_PORT_NL` | Порт панели 3x-ui на NL | `52000` |
+| `PROXY_PORT` | Порт inbound/outbound моста (обычно `443`) | `443` |
+| `REALITY_DEST_RU` | Reality target на RU inbound (SNI/dest) | `example.com:443` |
+| `REALITY_DEST_NL` | Reality target на NL inbound (мост) | `www.cloudflare.com:443` |
+
+Проверка IP на сервере: `curl -4 ifconfig.me`
+
+## Архитектура
+
+```
+Клиент → RU:PROXY_PORT (VLESS Reality XHTTP, клиент client-ru)
+              ├─ .ru / geoip:RU → direct (IP = RU_IP)
+              └─ остальное → NL:PROXY_PORT (клиент client-nl) → direct → интернет (IP = NL_IP)
+```
+
+Домен для TLS отложен — см. [вариант B (с доменом)](#вариант-b-с-доменом--vless--tls--xhttp-отложено). Сейчас: **Reality без домена** на RU.
+
+---
+
+## Шаг 1. Firewall (UFW)
+
+### Что такое firewall
+
+**Firewall (межсетевой экран)** — правила на сервере, которые решают, какой сетевой трафик **пропускать**, а какой **блокировать**.
+
+Без firewall VPS с публичным IP постоянно сканируют боты: перебор паролей SSH, проверка открытых портов, попытки эксплуатации уязвимостей. Firewall не заменяет сильные пароли и SSH-ключи, но **отсекает лишний шум** и закрывает все порты, которые ты явно не открыл.
+
+### UFW на Ubuntu/Debian
+
+**UFW** (Uncomplicated Firewall) — простая обёртка над `iptables`. Политики по умолчанию после включения:
+
+| Направление | Политика | Смысл |
+|-------------|----------|--------|
+| Incoming (входящие) | **deny** | Снаружи нельзя подключиться, если нет правила ALLOW |
+| Outgoing (исходящие) | **allow** | Сервер сам может ходить в интернет (apt, curl и т.д.) |
+
+### Зачем включаем
+
+1. Закрыть все входящие порты, кроме нужных (сначала только SSH).
+2. Снизить нагрузку от ботов и автоматических атак.
+3. Перед установкой 3x-ui явно контролировать, какие порты открыты (панель, inbound прокси).
+
+### Правильный порядок команд
+
+> **Важно:** сначала разрешить SSH, **потом** включить firewall. Иначе можно потерять доступ к серверу.
+
+```bash
+# 1. Проверить текущее состояние
+ufw status
+
+# 2. Разрешить SSH (порт 22) — до включения!
+ufw allow OpenSSH
+
+# 3. Включить firewall
+ufw --force enable
+
+# 4. Проверить правила
+ufw status verbose
+```
+
+`OpenSSH` — готовый профиль UFW; эквивалент `ufw allow 22/tcp`.
+`ufw --force enable` включает firewall без интерактивного подтверждения.
+
+### Открытие портов 80 и 443
+
+Перед установкой 3x-ui и настройкой прокси с TLS нужно разрешить стандартные веб-порты:
+
+| Порт | Зачем |
+|------|--------|
+| **80/tcp** | HTTP — выпуск сертификата Let's Encrypt (ACME challenge), редирект на HTTPS |
+| **443/tcp** | HTTPS — основной порт для прокси с TLS (VLESS/VMess + WebSocket и т.д.) |
+
+```bash
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw status verbose
+```
+
+Открываем **до** установки 3x-ui, чтобы после настройки inbound не забыть про firewall.
+
+### Порт панели 3x-ui в UFW *(легко забыть — в гайдах часто не говорят)*
+
+Установщик 3x-ui задаёт **случайный порт панели**.
+Пока он не открыт в UFW, браузер **не достучится** до панели, хотя сервис работает.
+Узнать порт можно в настройках панели: `x-ui settings`. На RU: `ufw allow <PANEL_PORT_RU>/tcp`, на NL: `ufw allow <PANEL_PORT_NL>/tcp`.
+
+### Опционально: отключить ping (ICMP) *(отложено)*
+
+Гайды иногда предлагают в `/etc/ufw/before.rules` заменить `ACCEPT` на `DROP` для ICMP (в т.ч. `echo-request`). Эффект: сервер **не пингуется** снаружи.
+
+- **Плюс:** чуть меньше «шума» в простых сканах.
+- **Минус:** не скрывает VPN; агрессивный DROP всего ICMP может мешать PMTU.
+- **Компромисс:** DROP только `echo-request`, остальное оставить ACCEPT.
+- **Приоритет:** низкий, можно после рабочего прокси.
+
+```bash
+nano /etc/ufw/before.rules   # секция icmp
+ufw reload
+```
+
+---
+
+## Шаг 2. Вход по SSH-ключам *(отложено)*
+
+> Можно временно пропустить этот шаг, настроить прокси и вернуться к нему позже.
+
+### 2.1. Сгенерировать ключ на локальной машине (Windows)
+
+В PowerShell или Git Bash **на своём ПК** (не на сервере):
+
+```powershell
+ssh-keygen -t ed25519 -C "proxy-playbook" -f "$env:USERPROFILE\.ssh\id_ed25519_proxy"
+```
+
+- На вопрос passphrase — можно Enter (пусто) или задать фразу (безопаснее).
+- Появятся два файла:
+  - `id_ed25519_proxy` — **приватный** ключ (никому не отдавать, не коммитить в git);
+  - `id_ed25519_proxy.pub` — **публичный** ключ (его кладём на сервер).
+
+### 2.2. Скопировать публичный ключ на сервер
+
+**Вариант A — `ssh-copy-id`** (если есть, например в Git Bash):
+
+```bash
+ssh-copy-id -i ~/.ssh/id_ed25519_proxy.pub root@<NL_IP>
+```
+
+**Вариант B — вручную** (PowerShell + уже открытая SSH-сессия):
+
+На **локальной** машине — вывести публичный ключ и скопировать строку:
+
+```powershell
+Get-Content "$env:USERPROFILE\.ssh\id_ed25519_proxy.pub"
+```
+
+На **сервере** — добавить ключ:
+
+```bash
+mkdir -p ~/.ssh
+chmod 700 ~/.ssh
+nano ~/.ssh/authorized_keys   # вставить строку целиком, сохранить
+chmod 600 ~/.ssh/authorized_keys
+```
+
+### 2.3. Проверить вход по ключу
+
+**Не закрывая** текущую SSH-сессию, открыть **новое** окно терминала:
+
+```powershell
+ssh -i "$env:USERPROFILE\.ssh\id_ed25519_proxy" root@<NL_IP>
+```
+
+Если зашло **без пароля** (или только с passphrase ключа) — ключ работает.
+
+Опционально — запись в `~/.ssh/config` на Windows (`C:\Users\<имя>\.ssh\config`):
+
+```
+Host nl-proxy
+    HostName <NL_IP>
+    User root
+    IdentityFile ~/.ssh/id_ed25519_proxy
+```
+
+Тогда достаточно: `ssh nl-proxy`.
+
+### 2.4. Отключить вход по паролю *(только после проверки ключа!)*
+
+> **Важно:** делать в **открытой** сессии, где ключ уже проверен. Иначе можно потерять доступ.
+
+```bash
+nano /etc/ssh/sshd_config
+```
+
+Изменить / убедиться:
+
+```
+PubkeyAuthentication yes
+PasswordAuthentication no
+PermitRootLogin prohibit-password
+```
+
+Применить:
+
+```bash
+sshd -t && systemctl reload sshd
+```
+
+Снова проверить вход по ключу из **нового** терминала. Старую сессию закрывать только после успешной проверки.
+
+### 2.5. Опционально: fail2ban
+
+Банит IP после нескольких неудачных попыток SSH (полезно, пока пароль ещё включён):
+
+```bash
+apt update && apt install -y fail2ban
+systemctl enable --now fail2ban
+```
+
+---
+
+## Шаг 3. Установка 3x-ui (RU)
+
+### Команда установки
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+```
+
+Переустановка / повторный запуск после обрыва SSH — нормально: установщик подхватит уже заданные username, password и WebBasePath.
+
+### Опрос установщика — что выбирать
+
+| Вопрос | Ответ | Зачем |
+|--------|--------|--------|
+| Database | **1** SQLite | Достаточно для личного использования |
+| Customize Panel Port? | **n** | Случайный порт безопаснее дефолтного |
+| SSL certificate | **2** Let's Encrypt for **IP** | Домена пока нет |
+| Correct public IPv4? | **y** | Подтвердить IP **этого** сервера (`RU_IP` на RU, `NL_IP` на NL) |
+| IPv6 | Enter (пусто) | Если нет IPv6 |
+| ACME port | **80** (default) | Нужен открытый `80/tcp` в UFW |
+
+**Не путать:** на вопрос «Choose an option» вводится только цифра **1–4**, IP вводится **на следующем шаге**.
+
+Сертификат по IP: срок **~6 дней**, продление через **acme.sh** (cron), установщик настраивает сам.
+
+### После установки — данные для входа
+
+```bash
+x-ui settings    # port, username, password, webBasePath
+x-ui status      # сервис и Xray
+```
+
+Формат URL панели:
+
+```
+https://<IP>:<PORT>/<WebBasePath>/
+```
+
+Пример для RU (порт и path — свои, смотри `x-ui settings`):
+
+```
+https://<RU_IP>:<PANEL_PORT_RU>/<WebBasePath>/
+```
+
+## Шаг 4. Inbound — два подхода
+
+Два способа поднять клиентский прокси в 3x-ui. Выбор зависит от того, есть ли **свой домен** и **на каком сервере** висит DNS.
+
+| | **A. Без домена** | **B. С доменом** |
+|---|-------------------|------------------|
+| **Протокол** | VLESS + **Reality** | VLESS + **TLS** |
+| **Транспорт** | TCP (обычно) | **XHTTP** |
+| **DNS** | Не нужен для inbound | A-запись на **зарубежный** сервер (NL) |
+| **Сертификат inbound** | Не нужен (маскировка под чужой сайт) | Let's Encrypt на **свой** домен |
+| **SSL панели** | LE для IP (уже сделано на RU) | LE для домена |
+| **Сервер** | RU (`RU_IP`) | NL (`NL_IP`) |
+| **Статус** | **Текущий путь** | Отложено (+ nginx fallback) |
+
+---
+
+### Вариант A. Без домена — VLESS + Reality
+
+**Reality** не требует своего домена и сертификата. Трафик маскируется под **чужой** реальный HTTPS-сайт (dest / SNI): для DPI это похоже на обычное TLS-подключение к известному домену.
+
+#### RealiTLScanner — поиск подходящих dest
+
+Сканер из экосистемы XTLS проверяет соседние IP в подсети VPS и ищет хосты с TLS, подходящие под Reality.
+
+**Репозиторий:** [XTLS/RealiTLScanner](https://github.com/XTLS/RealiTLScanner/releases)
+
+**Установка (RU, v0.2.3):**
+
+```bash
+wget https://github.com/XTLS/RealiTLScanner/releases/download/v0.2.3/RealiTLScanner-linux-amd64
+chmod +x RealiTLScanner-linux-amd64
+```
+
+**Запуск** — сканирует подсеть вокруг указанного IP:
+
+```bash
+./RealiTLScanner-linux-amd64 --addr <RU_IP>
+```
+
+Остановка: `Ctrl+C` (режим infinite — сканирует непрерывно).
+
+**Предупреждение `Cannot open Country.mmdb`** — не критично, геолокация в выводе будет `geo=N/A`.
+
+**Как читать строку результата:**
+
+```text
+feasible=true  tls="TLS 1.3"  alpn=h2  cert-domain=github.com
+```
+
+| Поле | Что искать |
+|------|------------|
+| `feasible=true` | Подходит для Reality |
+| `tls="TLS 1.3"` | Обязательно TLS 1.3 |
+| `alpn=h2` | HTTP/2 — хорошо |
+| `cert-domain=...` | Домен для поля **SNI / dest** в inbound |
+
+**Примеры из скана подсети RU VPS** (соседи на том же хостинге, не наш сервер):
+
+| cert-domain | Заметка |
+|-------------|---------|
+| `cdnjs.cloudflare.com` | CDN, часто хороший candidat |
+| `github.com` | Крупный сайт, TLS 1.3 + h2 |
+| `*.vk.com`, `*.ozon.ru` | Крупные RU-сервисы |
+| `bierbach.ru`, `test.domiksvinok.ru` | Чужие VPS на той же подсети — **слабый** выбор |
+
+> **Как выбирать dest:** не брать первый попавшийся `.ru` соседа. Лучше **крупный стабильный** сайт с TLS 1.3 и h2. Часто вручную задают `www.microsoft.com:443`, `dl.google.com:443` или берут из скана CDN/глобальные домены (`github.com`, `cdnjs.cloudflare.com`).
+
+#### RU или NL — где запускать сканер?
+
+| Где сканер | Что находит | Когда имеет смысл |
+|------------|-------------|-------------------|
+| **RU** (`RU_IP`) | Соседи в подсети RU VPS — много случайных `.ru` сайтов | Можно посмотреть `feasible` цели в локальной подсети |
+| **NL** (`NL_IP`) | Соседи зарубежного DC | **Предпочтительно**, когда inbound на NL или exit за рубежом |
+
+**Вывод:** для **зарубежного exit / NL-inbound** сканer логичнее гонять **с NL-сервера** — dest ближе к «нормальному» зарубежному трафику. На RU скан всё равно полезен для обучения, но многие `cert-domain` — чужие мелкие сайты на shared hosting.
+
+Reality-**dest не обязан** быть из скана соседей: это **любой** доступный с твоего VPS сайт с TLS 1.3. Сканер помогает **найти и проверить** candidat'ов, а не заменяет здравый смысл.
+
+#### Inbound в 3x-ui (Reality) — черновик
+
+> Детальная пошаговая настройка полей панели — допишем после выбора dest.
+
+1. **Inbounds → Add inbound**
+2. Protocol: **VLESS**, Port: **443** (уже открыт в UFW)
+3. Security: **Reality**
+4. **Dest (target):** `домен:443` выбранного сайта (напр. `www.microsoft.com:443`)
+5. **SNI / Server Names:** тот же домен
+6. **uTLS / Fingerprint:** `chrome` (типично)
+7. Сгенерировать **Short ID**, **Private key** (панель делает сама)
+8. Добавить клиента → QR / ссылка в v2rayN / v2rayNG
+
+---
+
+### Вариант B. С доменом — VLESS + TLS + XHTTP
+
+Путь из гайда для **зарубежного сервера**, когда появится домен.
+
+#### Предварительные условия
+
+1. Арендовать домен.
+2. **DNS A-запись → IP зарубежного сервера (NL)**, не RU:
+   ```
+   vpn.example.com  →  NL_IP
+   ```
+3. На NL: 3x-ui + Let's Encrypt **для домена** (вариант 1 при установке).
+4. UFW: `80/tcp`, `443/tcp` (для ACME и прокси).
+
+> В гайде домен вешают именно на **зарубежный** VPS — клиент ходит на NL по имени, сертификат валидный, при смене IP меняется только DNS.
+
+#### Inbound — параметры (черновик)
+
+| Поле | Значение |
+|------|----------|
+| Protocol | VLESS |
+| Security | TLS |
+| Transport | **XHTTP** |
+| Domain / SNI | свой домен (`vpn.example.com`) |
+| Certificate | Let's Encrypt (из панели или acme.sh) |
+| Port | 443 |
+
+#### Fallback-заглушка через nginx *(отложено — распишешь позже)*
+
+Идея из гайда: на **443** параллельно с прокси (или через маршрутизацию) отдавать **обычный HTTP/HTTPS-сайт-заглушку** через **nginx** — при прямой проверке IP сервер выглядит как простой веб-сервер, а не «голый» VPN.
+
+```
+TODO (позже):
+- [ ] nginx на 443 (или split routing с Xray)
+- [ ] простая статическая страница / редирект
+- [ ] согласовать порты с inbound XHTTP в 3x-ui
+- [ ] не светить панель 3x-ui на том же URL
+```
+
+### Чеклист доменный путь (NL)
+
+- [ ] Домен куплен
+- [ ] A-запись на NL (`NL_IP`)
+- [ ] 3x-ui на NL с LE для домена
+- [ ] Inbound VLESS + TLS + XHTTP
+- [ ] nginx fallback-заглушка
+- [ ] Клиент по домену, не по IP
+
+---
+
+## Шаг 6. Каскад RU → NL
+
+> Примеры конфигов: [`xray-ru-cascade.json`](examples/xray-ru-cascade.json), [`xray-nl-bridge.json`](examples/xray-nl-bridge.json) (секреты — плейсхолдеры).
+
+### Inbound и Outbound — коротко
+
+| Термин | Кто | Аналогия |
+|--------|-----|----------|
+| **Inbound** | Сервер **слушает**, сюда подключаются | Дверь: ждёшь гостей |
+| **Outbound** | Сервер **сам идёт** на другой сервер (как клиент) | Ты идёшь в чужую дверь |
+
+**Правило каскада:** outbound на сервере X содержит **ссылку клиента inbound на сервере Y**, куда X подключается.
+
+```
+Телефон ──► RU inbound (admin-ru)
+RU outbound ──► NL inbound (admin-nl)    ← RU стучится на NL
+NL direct ──► интернет
+```
+
+> **Не путать с частью гайдов:** «RU-ссылка → outbound на NL» — это связь **нод панели** (NL → RU), не направление user-трафика. Для exit за рубежом нужно **RU outbound → NL inbound**.
+
+### Схема
+
+```
+┌─────────┐  Reality+XHTTP   ┌─────────┐  Reality+XHTTP   ┌─────────┐
+│ Телефон │ ───────────────► │   RU    │ ───────────────► │   NL    │ ──► 🌍
+│         │  admin-ru :PROXY_PORT   │         │  admin-nl :PROXY_PORT   │ direct  │
+└─────────┘                  └────┬────┘                  └─────────┘
+                                  │
+                         .ru / geoip:RU
+                                  ▼
+                               direct (RU IP, split)
+```
+
+### NL (`NL_IP`) — мост
+
+| Что | Настройка |
+|-----|-----------|
+| **Inbound** | VLESS + Reality + XHTTP, порт **`PROXY_PORT`** |
+| **Клиент** | `admin-nl` — **только для RU**, не для телефона |
+| **Reality dest** | `REALITY_DEST_NL` |
+| **Outbound** | только **`direct`** — в интернет с NL IP |
+| **Не нужно** | outbound на RU |
+
+UFW (желательно ограничить мост):
+
+```bash
+ufw allow from <RU_IP> to any port <PROXY_PORT> proto tcp
+ufw allow <PANEL_PORT_NL>/tcp
+```
+
+### RU (`RU_IP`) — вход + маршрутизация
+
+| Что | Настройка |
+|-----|-----------|
+| **Inbound** | VLESS + Reality + XHTTP, порт **`PROXY_PORT`** |
+| **Клиент** | `admin-ru` → **ссылка в телефон / v2rayN** |
+| **Reality dest** | `REALITY_DEST_RU` |
+| **Outbound** | вставить **ссылку клиента `admin-nl` с NL** |
+| **Routing** | `.ru` / `geoip:RU` → `direct`; остальной tcp,udp → outbound на NL |
+
+Критично для моста RU → NL:
+
+| Параметр | Должно совпадать |
+|----------|------------------|
+| UUID | RU outbound = клиент `admin-nl` на NL inbound |
+| `serverName` | один из `serverNames` NL inbound (из `REALITY_DEST_NL`) |
+| `shortId` | один из `shortIds` NL inbound |
+| `publicKey` | пара к `privateKey` Reality на NL inbound |
+| `path` / XHTTP | одинаково на обеих сторонах (`/`) |
+
+### Routing на RU (split)
+
+Российские сайты — напрямую (быстрее, RU IP). Остальное — через NL.
+
+```json
+{ "domain": ["regexp:.*\\.ru$", "..."], "outboundTag": "direct" }
+{ "ip": ["ext:geoip_RU.dat:ru"], "outboundTag": "direct" }
+{ "network": "tcp,udp", "outboundTag": "inbound-nl1-admin-nl" }
+```
+
+Порядок правил важен: **сначала** исключения (`.ru` → direct), **потом** общее правило на NL.
+
+### Пошагово в панели 3x-ui
+
+1. **NL:** Inbound → VLESS Reality XHTTP `PROXY_PORT` → клиент `admin-nl` → скопировать **его** ссылку.
+2. **RU:** Outbounds → Add → вставить ссылку `admin-nl`.
+3. **RU:** Routing → `.ru` / geoip RU → direct; всё остальное → outbound на NL.
+4. **RU:** Inbound → клиент `admin-ru` → ссылка **только в телефон**.
+5. `x-ui restart` на обоих серверах.
+
+### Проверка
+
+| Тест | Ожидание |
+|------|----------|
+| `ifconfig.me` через прокси (google.com) | IP **NL** (`NL_IP`) |
+| `ifconfig.me` на `.ru` сайте | IP **RU** (`RU_IP`) |
+| Подключение клиента | только RU-ссылка (`admin-ru`) |
+
+### Типичные ошибки
+
+| Симптом | Причина |
+|---------|---------|
+| Везде RU IP | нет routing на NL outbound |
+| Не коннектится мост | UUID / shortId / publicKey не совпадают |
+| NL outbound на RU | обратное направление — для exit не нужно |
+| RU-ссылка в NL outbound | связь нод, не user exit |
+
+### Экспорт конфига для отладки
+
+```bash
+jq '{
+  inbounds: [.inbounds[] | select(.protocol != "tunnel") | {tag, port, protocol, clients: [.settings.clients[]?.email]}],
+  outbounds: [.outbounds[] | {tag, protocol, address: .settings.address, port: .settings.port}],
+  routing: .routing.rules
+}' /usr/local/x-ui/bin/config.json
+```
+
+Полный конфиг: `cat /usr/local/x-ui/bin/config.json` — **не коммитить** с ключами.
+
+---
+
+## Шаг 5. Клиент и проверка
+
+1. Импорт **RU**-ссылки (`admin-ru`) в v2rayN / v2rayNG / Nekobox.
+2. **Не** подключаться напрямую к NL `admin-nl` с телефона — это мост для RU.
+3. Проверка split: зарубежный сайт → NL IP; `.ru` → RU IP.
+
+---
+
+## Полезные команды
+
+### RealiTLScanner
+
+```bash
+./RealiTLScanner-linux-amd64 --addr <IP_ЭТОГО_СЕРВЕРА>   # RU_IP или NL_IP
+```
+
+### Экспорт Xray config (без секретов)
+
+```bash
+jq '{
+  inbounds: [.inbounds[] | select(.protocol != "tunnel") | {tag, port, protocol, clients: [.settings.clients[]?.email]}],
+  outbounds: [.outbounds[] | {tag, protocol, address: .settings.address, port: .settings.port}],
+  routing: .routing.rules
+}' /usr/local/x-ui/bin/config.json
+```
+
+---
+
+*Примеры Xray: `docs/examples/`.*
