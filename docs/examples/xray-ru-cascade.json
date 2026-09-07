@@ -1,0 +1,88 @@
+{
+  "_comment": "Пример Xray config RU (5.35.127.68) — вход клиентов + каскад на NL. Секреты заменены на плейсхолдеры. Источник: /usr/local/x-ui/bin/config.json",
+  "inbounds": [
+    {
+      "listen": "0.0.0.0",
+      "port": 443,
+      "protocol": "vless",
+      "tag": "in-443-tcp",
+      "settings": {
+        "clients": [
+          {
+            "email": "admin-ru",
+            "id": "YOUR-PHONE-CLIENT-UUID"
+          }
+        ],
+        "decryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "target": "digitaltechnologies.top:443",
+          "serverNames": ["digitaltechnologies.top"],
+          "privateKey": "<REALITY_PRIVATE_KEY_RU>",
+          "shortIds": ["c6a389a3", "6303"]
+        },
+        "xhttpSettings": {
+          "host": "",
+          "mode": "auto",
+          "path": "/"
+        }
+      }
+    }
+  ],
+  "outbounds": [
+    { "protocol": "freedom", "tag": "direct" },
+    { "protocol": "blackhole", "tag": "blocked" },
+    {
+      "protocol": "vless",
+      "tag": "inbound-nl1-admin-nl",
+      "settings": {
+        "address": "138.124.2.114",
+        "port": 443,
+        "id": "BRIDGE-UUID-SAME-AS-NL-INBOUND-CLIENT",
+        "encryption": "none"
+      },
+      "streamSettings": {
+        "network": "xhttp",
+        "security": "reality",
+        "realitySettings": {
+          "fingerprint": "chrome",
+          "publicKey": "<REALITY_PUBLIC_KEY_FROM_NL_PRIVATE>",
+          "serverName": "www.cloudflare.com",
+          "shortId": "66eaa91a55",
+          "spiderX": "/3f330ded5ff3637"
+        },
+        "xhttpSettings": {
+          "mode": "auto",
+          "path": "/"
+        }
+      }
+    }
+  ],
+  "routing": {
+    "domainStrategy": "AsIs",
+    "rules": [
+      { "type": "field", "inboundTag": ["api"], "outboundTag": "api" },
+      {
+        "type": "field",
+        "domain": [
+          "ext:geosite_RU.dat:ru-available-only-inside",
+          "regexp:.*\\.ru$",
+          "regexp:.*\\.su$",
+          "regexp:.*\\.xn--p1ai$"
+        ],
+        "outboundTag": "direct"
+      },
+      { "type": "field", "ip": ["ext:geoip_RU.dat:ru"], "outboundTag": "direct" },
+      {
+        "type": "field",
+        "network": "tcp,udp",
+        "outboundTag": "inbound-nl1-admin-nl"
+      },
+      { "type": "field", "ip": ["geoip:private"], "outboundTag": "blocked" },
+      { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" }
+    ]
+  }
+}
