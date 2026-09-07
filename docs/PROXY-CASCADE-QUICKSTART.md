@@ -83,61 +83,11 @@ ufw status verbose
 
 Открываем **до** установки 3x-ui, чтобы после настройки inbound не забыть про firewall.
 
-### Как понять, на каком сервере ты работаешь
-
-Prompt `root@235714` и hostname в логах (`235714.com`) **не показывают** страну или провайдера — это внутреннее имя хостера.
-
-Надёжная проверка — **публичный IP**:
-
-```bash
-curl -4 ifconfig.me
-```
-
-| IP | Сервер |
-|----|--------|
-| `5.35.127.68` | RU (adminvps) |
-| `138.124.2.114` | NL (hip.hosting) |
-
-При установке 3x-ui IP также виден в логе Let's Encrypt и в URL панели.
-
-### Текущий результат UFW (RU, `5.35.127.68`)
-
-```
-Status: active
-Logging: on (low)
-Default: deny (incoming), allow (outgoing), disabled (routed)
-New profiles: skip
-
-To                         Action      From
---                         ------      ----
-22/tcp (OpenSSH)           ALLOW IN    Anywhere
-80/tcp                     ALLOW IN    Anywhere
-443/tcp                    ALLOW IN    Anywhere
-22/tcp (OpenSSH (v6))      ALLOW IN    Anywhere (v6)
-80/tcp (v6)                ALLOW IN    Anywhere (v6)
-443/tcp (v6)               ALLOW IN    Anywhere (v6)
-```
-
-**Что это значит:**
-
-- `Status: active` — firewall включён.
-- `Default: deny (incoming)` — всё входящее заблокировано, кроме явных правил.
-- `22/tcp (OpenSSH) ALLOW IN` — SSH доступен с любого IP (IPv4 и IPv6).
-- `80/tcp`, `443/tcp` — HTTP/HTTPS открыты для сертификатов и прокси-трафика.
-- `(v6)` — те же правила для IPv6.
-- `disabled (routed)` — форвардинг между интерфейсами не фильтруется UFW (понадобится позже для каскада, настраивается отдельно).
-
 ### Порт панели 3x-ui в UFW *(легко забыть — в гайдах часто не говорят)*
 
-Установщик 3x-ui задаёт **случайный порт панели** (у нас на RU: `50593`). Пока он не открыт в UFW, браузер **не достучится** до панели, хотя сервис работает.
-
-```bash
-# узнать порт: x-ui settings
-ufw allow 50593/tcp
-ufw status verbose
-```
-
-Порт панели **не** равен 443 — это отдельный HTTPS-порт для админки.
+Установщик 3x-ui задаёт **случайный порт панели**.
+Пока он не открыт в UFW, браузер **не достучится** до панели, хотя сервис работает.
+Узнать порт можно в настройках панели: `x-ui settings`.
 
 ### Опционально: отключить ping (ICMP) *(отложено)*
 
