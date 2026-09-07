@@ -1,5 +1,5 @@
 {
-  "_comment": "Пример Xray config NL (138.124.2.114) — мост для RU. Секреты заменены на плейсхолдеры. Источник: /usr/local/x-ui/bin/config.json",
+  "_comment": "NL server — bridge inbound for RU only. Replace secrets; restrict PROXY_PORT in UFW to RU_SERVER_IP.",
   "inbounds": [
     {
       "listen": "0.0.0.0",
@@ -7,12 +7,7 @@
       "protocol": "vless",
       "tag": "in-443-tcp",
       "settings": {
-        "clients": [
-          {
-            "email": "admin-nl",
-            "id": "BRIDGE-UUID-SAME-AS-RU-OUTBOUND"
-          }
-        ],
+        "clients": [{ "email": "client-nl", "id": "BRIDGE-UUID" }],
         "decryption": "none"
       },
       "streamSettings": {
@@ -20,15 +15,11 @@
         "security": "reality",
         "realitySettings": {
           "target": "www.cloudflare.com:443",
-          "serverNames": ["blog.api.www.cloudflare.com", "www.cloudflare.com"],
+          "serverNames": ["www.cloudflare.com"],
           "privateKey": "<REALITY_PRIVATE_KEY_NL>",
-          "shortIds": ["66eaa91a55", "1e0080af"]
+          "shortIds": ["SHORT_ID_NL"]
         },
-        "xhttpSettings": {
-          "host": "",
-          "mode": "auto",
-          "path": "/"
-        }
+        "xhttpSettings": { "host": "", "mode": "auto", "path": "/" }
       }
     }
   ],

@@ -1,5 +1,5 @@
 {
-  "_comment": "Пример Xray config RU (5.35.127.68) — вход клиентов + каскад на NL. Секреты заменены на плейсхолдеры. Источник: /usr/local/x-ui/bin/config.json",
+  "_comment": "RU server — client inbound + cascade outbound. Replace NL_SERVER_IP and secrets.",
   "inbounds": [
     {
       "listen": "0.0.0.0",
@@ -7,28 +7,19 @@
       "protocol": "vless",
       "tag": "in-443-tcp",
       "settings": {
-        "clients": [
-          {
-            "email": "admin-ru",
-            "id": "YOUR-PHONE-CLIENT-UUID"
-          }
-        ],
+        "clients": [{ "email": "client-ru", "id": "PHONE-CLIENT-UUID" }],
         "decryption": "none"
       },
       "streamSettings": {
         "network": "xhttp",
         "security": "reality",
         "realitySettings": {
-          "target": "digitaltechnologies.top:443",
-          "serverNames": ["digitaltechnologies.top"],
+          "target": "REALITY_DEST:443",
+          "serverNames": ["REALITY_SNI"],
           "privateKey": "<REALITY_PRIVATE_KEY_RU>",
-          "shortIds": ["c6a389a3", "6303"]
+          "shortIds": ["SHORT_ID_RU"]
         },
-        "xhttpSettings": {
-          "host": "",
-          "mode": "auto",
-          "path": "/"
-        }
+        "xhttpSettings": { "host": "", "mode": "auto", "path": "/" }
       }
     }
   ],
@@ -37,11 +28,11 @@
     { "protocol": "blackhole", "tag": "blocked" },
     {
       "protocol": "vless",
-      "tag": "inbound-nl1-admin-nl",
+      "tag": "outbound-to-nl",
       "settings": {
-        "address": "138.124.2.114",
+        "address": "NL_SERVER_IP",
         "port": 443,
-        "id": "BRIDGE-UUID-SAME-AS-NL-INBOUND-CLIENT",
+        "id": "BRIDGE-UUID",
         "encryption": "none"
       },
       "streamSettings": {
@@ -49,15 +40,11 @@
         "security": "reality",
         "realitySettings": {
           "fingerprint": "chrome",
-          "publicKey": "<REALITY_PUBLIC_KEY_FROM_NL_PRIVATE>",
-          "serverName": "www.cloudflare.com",
-          "shortId": "66eaa91a55",
-          "spiderX": "/3f330ded5ff3637"
+          "publicKey": "<REALITY_PUBLIC_KEY_NL>",
+          "serverName": "REALITY_SNI_NL",
+          "shortId": "SHORT_ID_NL"
         },
-        "xhttpSettings": {
-          "mode": "auto",
-          "path": "/"
-        }
+        "xhttpSettings": { "mode": "auto", "path": "/" }
       }
     }
   ],
@@ -76,11 +63,7 @@
         "outboundTag": "direct"
       },
       { "type": "field", "ip": ["ext:geoip_RU.dat:ru"], "outboundTag": "direct" },
-      {
-        "type": "field",
-        "network": "tcp,udp",
-        "outboundTag": "inbound-nl1-admin-nl"
-      },
+      { "type": "field", "network": "tcp,udp", "outboundTag": "outbound-to-nl" },
       { "type": "field", "ip": ["geoip:private"], "outboundTag": "blocked" },
       { "type": "field", "protocol": ["bittorrent"], "outboundTag": "blocked" }
     ]
